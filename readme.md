@@ -22,6 +22,76 @@ This is a simplified in-memory Publish/Subscribe system implemented in Python us
 *   **Message Replay:** Supports replaying the last `n` messages to new subscribers via the `last_n` parameter in the subscribe message. Up to 100 messages are stored per topic.
 *   **Heartbeats:** Server sends periodic "ping" info messages to connected WebSocket clients.
 
+## High-Level Design
+
+The system is built around a FastAPI application that manages state in memory using Python's `asyncio` capabilities for concurrency.
+
+*   **API Layer**: FastAPI handles incoming HTTP requests for REST endpoints and manages WebSocket connections via the `/ws` endpoint.
+*   **State Management**:
+    *   A global `dict` protected by an `asyncio.Lock` stores all `Topic` instances.
+    *   Each `Topic` object is responsible for its own set of subscribers, its message history (`deque`), and message fan-out logic.
+*   **Concurrency**: `asyncio.Lock` is used within each `Topic` and around the global topic dictionary to prevent race conditions when multiple clients publish or subscribe concurrently.
+*   **Fan-Out and Backpressure**: When a message is published to a topic, it is added to an `asyncio.Queue` for each subscriber. A separate asynchronous task per subscriber reads from this queue and sends messages over the WebSocket. If a subscriber's queue reaches its maximum size (`MAX_SUBSCRIBER_QUEUE`), the oldest message is dropped to prevent memory issues and a `SLOW_CONSUMER` error is issued.
+*   **Message Replay**: Each topic maintains a fixed-size `deque` (`MAX_HISTORY`) of recent messages, allowing new subscribers to request the `last_n` messages upon subscription.
+
+## High-Level Diagram
+
+```mermaid
+graph TD
+    subgraph "Clients"
+        direction TB
+        A[Admin Client]
+        P[Publisher Client]
+        S[Subscriber Client]
+    end
+
+    subgraph "In-Memory Pub/Sub Service"
+        direction TB
+        F_REST["REST Endpoint <br/> /topics, /health, /stats"]
+        F_WS["WebSocket Endpoint <br/> /ws"]
+
+        subgraph "Core Logic & State"
+             TM["Topic Manager <br/><i>(Global topics dict + lock)</i>"]
+             T1["Topic 1 <br/><i>Subscribers, History deque,<br/>Subscriber Queues</i>"]
+             T2["Topic N <br/><i>...</i>"]
+             AS["Async Senders <br/><i>(1 per subscriber queue)</i>"]
+        end
+
+        TM -- "manages" --> T1
+        TM -- "manages" --> T2
+    end
+
+    A -- "HTTP Request" --> F_REST
+    P -- "WebSocket Message" --> F_WS
+    S -- "WebSocket Message" --> F_WS
+
+    F_REST -- "Topic CRUD" --> TM
+    F_WS -- "Connection & Message Routing" --> TM
+
+    TM -- "Get Topic" ---> T1
+    TM -- "Get Topic" ---> T2
+
+    F_WS -- "Publish to / Subscribe to" --> T1
+    F_WS -- "Publish to / Subscribe to" --> T2
+
+    T1 -- "Fan-out to" --> Q1((Queue S1))
+    T1 -- "Fan-out to" --> Qn((Queue Sn))
+
+    Q1 -...-> AS
+    Qn -...-> AS
+    AS -- "Pushes message to" -->S
+
+    %% Styling
+    classDef client fill:#D1E7DD,stroke:#0F5132,stroke-width:1px;
+    classDef endpoint fill:#CFE2FF,stroke:#084298,stroke-width:1px;
+    classDef topic fill:#F8D7DA,stroke:#842029,stroke-width:1px;
+    classDef core fill:#FFF3CD,stroke:#664d03,stroke-width:1px;
+    class A,P,S client;
+    class F_REST,F_WS endpoint;
+    class T1,T2 topic;
+    class TM,AS,Q1,Qn core;
+```
+
 ## Assumptions & Design Choices
 
 *   **Backpressure Policy:** Each subscriber has a bounded queue of 50 messages. If the queue is full when a new message arrives:
@@ -325,6 +395,4 @@ sequenceDiagram
     Note over Sub1,Server: Ping/Pong
     Sub1->>Server: {"type":"ping", ...}
     Server->>Sub1: {"type":"pong", ...}
-
 ```
-
