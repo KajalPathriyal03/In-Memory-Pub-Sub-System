@@ -41,6 +41,61 @@ This is a simplified in-memory Publish/Subscribe system implemented in Python us
 
 ## Running the Application
 
+graph TD
+    subgraph "Clients"
+        direction TB
+        A[Admin Client]
+        P[Publisher Client]
+        S[Subscriber Client]
+    end
+
+    subgraph "In-Memory Pub/Sub Service"
+        direction TB
+        F_REST["REST Endpoint <br/> /topics, /health, /stats"]
+        F_WS["WebSocket Endpoint <br/> /ws"]
+
+        subgraph "Core Logic & State"
+             TM["Topic Manager <br/><i>(Global topics dict + lock)</i>"]
+             T1["Topic 1 <br/><i>Subscribers, History deque,<br/>Subscriber Queues</i>"]
+             T2["Topic N <br/><i>...</i>"]
+             AS["Async Senders <br/><i>(1 per subscriber queue)</i>"]
+        end
+
+        TM -- "manages" --> T1
+        TM -- "manages" --> T2
+    end
+
+    A -- "HTTP Request" --> F_REST
+    P -- "WebSocket Message" --> F_WS
+    S -- "WebSocket Message" --> F_WS
+
+    F_REST -- "Topic CRUD" --> TM
+    F_WS -- "Connection & Message Routing" --> TM
+
+    TM -- "Get Topic" ---> T1
+    TM -- "Get Topic" ---> T2
+
+    F_WS -- "Publish to / Subscribe to" --> T1
+    F_WS -- "Publish to / Subscribe to" --> T2
+
+    T1 -- "Fan-out to" --> Q1((Queue S1))
+    T1 -- "Fan-out to" --> Qn((Queue Sn))
+
+    Q1 -...-> AS
+    Qn -...-> AS
+    AS -- "Pushes message to" -->S
+
+    %% Styling
+    classDef client fill:#D1E7DD,stroke:#0F5132,stroke-width:1px;
+    classDef endpoint fill:#CFE2FF,stroke:#084298,stroke-width:1px;
+    classDef topic fill:#F8D7DA,stroke:#842029,stroke-width:1px;
+    classDef core fill:#FFF3CD,stroke:#664d03,stroke-width:1px;
+    class A,P,S client;
+    class F_REST,F_WS endpoint;
+    class T1,T2 topic;
+    class TM,AS,Q1,Qn core;
+
+
 ### Option 1: Using Docker (Recommended)
 
 1.  **Build the Docker Image:**
@@ -325,4 +380,5 @@ sequenceDiagram
     Note over Sub1,Server: Ping/Pong
     Sub1->>Server: {"type":"ping", ...}
     Server->>Sub1: {"type":"pong", ...}
+
 ```
